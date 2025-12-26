@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>INFINITY_STATION_2026</title>
+    <style>
+        :root { --c1: #ff0033; --c2: #00f2ff; --bg: #000; }
+        .ocean-theme { --c1: #00f2ff; --c2: #7000ff; }
+
+        body {
+            margin: 0; background: var(--bg); overflow: hidden;
+            height: 100vh; color: white; font-family: 'Segoe UI', sans-serif; display: flex;
+        }
+
+        #master-layer { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; transition: 0.1s; }
+        canvas { filter: contrast(1.8) brightness(1.2); }
+
+        /* Glassmorphism Sidebar */
+        #side-queue {
+            width: 280px; background: rgba(255, 255, 255, 0.02); backdrop-filter: blur(50px);
+            border-right: 1px solid rgba(255, 255, 255, 0.1); padding: 25px; display: flex; flex-direction: column; gap: 12px; z-index: 500;
+        }
+
+        .queue-item { 
+            background: rgba(255, 255, 255, 0.05); padding: 12px; border-radius: 12px; font-size: 0.7rem; 
+            cursor: pointer; transition: 0.3s; border: 1px solid transparent; opacity: 0.5;
+        }
+        .queue-item.active { opacity: 1; border-color: var(--c1); background: rgba(255, 255, 255, 0.1); box-shadow: 0 0 20px var(--c1); }
+
+        /* The Command Hub */
+        #ui-dock {
+            position: fixed; bottom: 30px; left: 55%; transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.9); backdrop-filter: blur(20px);
+            padding: 20px 30px; border-radius: 40px; border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex; flex-direction: column; gap: 15px; z-index: 600;
+        }
+
+        .controls-row { display: flex; gap: 12px; align-items: center; justify-content: center; }
+        .slider-group { display: flex; flex-direction: column; gap: 5px; flex: 1; font-size: 0.55rem; font-weight: bold; letter-spacing: 1.5px; opacity: 0.8; }
+        
+        .btn { 
+            background: white; color: black; border: none; padding: 10px 20px; border-radius: 50px; 
+            font-weight: 900; font-size: 0.65rem; cursor: pointer; text-transform: uppercase; transition: 0.2s;
+        }
+        .btn:hover { background: var(--c1); color: white; transform: translateY(-3px); }
+        .warp-active { background: #00ffaa !important; color: black !important; box-shadow: 0 0 30px #00ffaa; }
+
+        input[type="range"] { accent-color: var(--c1); cursor: pointer; width: 100%; }
+        input[type="file"] { display: none; }
+    </style>
+</head>
+<body>
+
+    <div id="side-queue">
+        <h2 style="font-size: 0.6rem; letter-spacing: 5px; opacity: 0.4; margin-bottom: 20px;">STATION_2026_V1</h2>
+        <div id="queue-list"></div>
+    </div>
+
+    <div id="master-layer">
+        <canvas id="visualizer"></canvas>
+    </div>
+
+    <div id="ui-dock">
+        <div class="controls-row">
+            <div class="slider-group">INTENSITY <input type="range" id="sensitivity" min="0.5" max="5" step="0.1" value="2.5"></div>
+            <div class="slider-group">WARP_VELOCITY <input type="range" id="rotation-speed" min="0" max="0.1" step="0.001" value="0.02"></div>
+        </div>
+        
+        <div class="controls-row">
+            <label for="audio-upload" class="btn">INJECT</label>
+            <input type="file" id="audio-upload" accept="audio/*" multiple>
+            <button id="play-btn" class="btn">PLAY</button>
+            <button id="skip-btn" class="btn">SKIP ❯</button>
+            <button id="warp-btn" class="btn">WARP</button>
+            <button id="theme-btn" class="btn" style="background: var(--c1); color: white;">THEME</button>
+        </div>
+    </div>
+
+    <script>
+        const upload = document.getElementById('audio-upload');
+        const queueList = document.getElementById('queue-list');
+        const playBtn = document.getElementById('play-btn');
+        const skipBtn = document.getElementById('skip-btn');
+        const warpBtn = document.getElementById('warp-btn');
+        const themeBtn = document.getElementById('theme-btn');
+        const sensitivity = document.getElementById('sensitivity');
+        const rotationSlider = document.getElementById('rotation-speed');
+        const canvas = document.getElementById('visualizer');
+        const ctx = canvas.getContext('2d');
+
+        let audioContext, analyser, source, dataArray;
+        let audio = new Audio();
+        let queue = [];
+        let currentIndex = -1;
+        let isWarp = false;
+        let rotationAngle = 0;
+
+        // --- THE PERSISTENCE ENGINE (Memory) ---
+        function saveSettings() {
+            const settings = {
+                sens: sensitivity.value,
+                rot: rotationSlider.value,
+                theme: document.body.classList.contains('ocean-theme'),
+                warp: isWarp
+            };
+            localStorage.setItem('visualizer_settings', JSON.stringify(settings));
+        }
+
+        function loadSettings() {
+            const saved = JSON.parse(localStorage.getItem('visualizer_settings'));
+            if (saved) {
+                sensitivity.value = saved.sens;
+                rotationSlider.value = saved.rot;
+                if (saved.theme) document.body.classList.add('ocean-theme');
+                if (saved.warp) { isWarp = true; warpBtn.classList.add('warp-active'); }
+            }
+        }
+
+        themeBtn.addEventListener('click', () => { document.body.classList.toggle('ocean-theme'); saveSettings(); });
+        warpBtn.addEventListener('click', () => { isWarp = !isWarp; warpBtn.classList.toggle('warp-active'); saveSettings(); });
+        [sensitivity, rotationSlider].forEach(s => s.addEventListener('input', saveSettings));
+
+        upload.addEventListener('change', function() {
+            Array.from(this.files).forEach(file => {
+                queue.push({ name: file.name, url: URL.createObjectURL(file) });
+            });
+            renderQueue();
+            if (currentIndex === -1) loadTrack(0);
+        });
+
+        function renderQueue() {
+            queueList.innerHTML = queue.map((track, i) => `
+                <div class="queue-item ${i === currentIndex ? 'active' : ''}" onclick="loadTrack(${i})">
+                    ${track.name.substring(0, 20)}...
+                </div>
+            `).join('');
+        }
+
+        window.loadTrack = function(index) {
+            currentIndex = index;
+            audio.src = queue[index].url;
+            audio.load();
+            renderQueue();
+            if (!audioContext) initAudio();
+            audio.play();
+            draw();
+        };
+
+        skipBtn.addEventListener('click', () => { if (currentIndex < queue.length - 1) loadTrack(currentIndex + 1); });
+        audio.onended = () => { if (currentIndex < queue.length - 1) loadTrack(currentIndex + 1); };
+
+        function initAudio() {
+            audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            analyser = audioContext.createAnalyser();
+            analyser.fftSize = 256;
+            dataArray = new Uint8Array(analyser.frequencyBinCount);
+            source = audioContext.createMediaElementSource(audio);
+            source.connect(analyser);
+            analyser.connect(audioContext.destination);
+        }
+
+        playBtn.addEventListener('click', () => { if (audioContext) audioContext.resume(); audio.play(); draw(); });
+
+        function resize() {
+            canvas.width = window.innerWidth - 280;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+        loadSettings(); // Initialize saved state
+
+        function draw() {
+            if (audio.paused) return;
+            requestAnimationFrame(draw);
+            analyser.getByteFrequencyData(dataArray);
+
+            const sens = parseFloat(sensitivity.value);
+            const rotSpeed = parseFloat(rotationSlider.value);
+            const color1 = getComputedStyle(document.body).getPropertyValue('--c1');
+            const bass = dataArray[2];
+
+            // Surprise: Glitch Overload at Peak Bass
+            canvas.style.filter = (bass > 250) ? 'invert(1) contrast(2)' : 'contrast(1.8) brightness(1.2)';
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.2)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            rotationAngle += rotSpeed;
+
+            for (let i = 0; i < dataArray.length; i++) {
+                const val = dataArray[i];
+                const barHeight = (val / 255) * (canvas.height * 0.45) * sens;
+                ctx.shadowBlur = (val / 10) * sens;
+                ctx.shadowColor = color1;
+                ctx.fillStyle = (val > 240) ? "#fff" : color1;
+
+                if (!isWarp) {
+                    const barWidth = canvas.width / dataArray.length;
+                    ctx.beginPath();
+                    ctx.roundRect(i * barWidth, centerY - barHeight, barWidth - 4, barHeight, 50);
+                    ctx.roundRect(i * barWidth, centerY, barWidth - 4, barHeight, 50);
+                    ctx.fill();
+                } else {
+                    const angle = (i * (Math.PI * 2 / dataArray.length)) + rotationAngle;
+                    const innerRadius = 80 + (bass * 0.3);
+                    const xStart = centerX + Math.cos(angle) * innerRadius;
+                    const yStart = centerY + Math.sin(angle) * innerRadius;
+                    const xEnd = centerX + Math.cos(angle) * (innerRadius + barHeight);
+                    const yEnd = centerY + Math.sin(angle) * (innerRadius + barHeight);
+                    ctx.lineWidth = (val / 25) * sens;
+                    ctx.strokeStyle = color1;
+                    ctx.lineCap = "round";
+                    ctx.beginPath(); ctx.moveTo(xStart, yStart); ctx.lineTo(xEnd, yEnd); ctx.stroke();
+                }
+            }
+        }
+    </script>
+</body>
+</html>
